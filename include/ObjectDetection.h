@@ -11,6 +11,13 @@
 #include <visualization_msgs/Marker.h>
 #include <math.h>
 #include <tf/tf.h>
+#include <tf/transform_listener.h>
+#include <boost/geometry.hpp>
+#include <boost/geometry/geometries/point_xy.hpp>
+#include <boost/geometry/geometries/polygon.hpp>
+
+#include <numeric>    
+#include <algorithm>
 
 class ObjectDetection
 {
@@ -33,18 +40,27 @@ class ObjectDetection
         const float x_res = 0.1;
         const float y_res = 0.1;
         const float z_res = 0.1;
-        const float score_threshold = 0.5;
 
-        bool use_gpu = false;
+        const float score_threshold = 0.5;
+        const float iou_threshold = 0.1;
+        
+        bool use_gpu = true;
 
         std::string object_classes[4] = {"background", "car", "pedestrian", "cyclist"};
+
+        float box_z_bot = -2.0;
+        float box_z_top = 0.0;
+
+        //tf::TransformListener tf_listener;
 
     public:
         ObjectDetection(ros::NodeHandle *nh);
         void cloud_cb(const sensor_msgs::PointCloud2ConstPtr& input);
         torch::Tensor pcl_to_voxel();
-        pcl::PointCloud<pcl::PointXYZ> voxel_to_pcl(torch::Tensor voxel);
         bool point_in_range(float x, float y, float z);
-        torch::Tensor box_corner_to_center(torch::Tensor box);
-        void publish_markers(torch::Tensor boxes);
+        torch::Tensor box_corner_to_center(torch::Tensor box, const tf::Transform &in_transform);
+        void publish_markers(torch::Tensor boxes, std::vector<int> indexes);
+        std::vector<int> non_max_supression(torch::Tensor pred);
+        std::vector<int> get_sorted_indexes(std::vector<float> scores);
+        geometry_msgs::Point transform_point(const geometry_msgs::Point &in_point, const tf::Transform &in_transform);
 };
