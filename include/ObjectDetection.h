@@ -58,9 +58,9 @@ class ObjectDetection
         void cloud_cb(const sensor_msgs::PointCloud2ConstPtr& input);
         torch::Tensor pcl_to_voxel();
         bool point_in_range(float x, float y, float z);
-        torch::Tensor box_corner_to_center(torch::Tensor box, const tf::Transform &in_transform);
+        void box_corner_to_center(float corners[8], float box[]);
         void publish_markers(torch::Tensor boxes, std::vector<int> indexes);
-        std::vector<int> non_max_supression(torch::Tensor pred);
-        std::vector<int> get_sorted_indexes(std::vector<float> scores);
+        std::vector<int> non_max_supression(float * scores, float corners[][8], int num_boxes);
+        std::vector<int> get_sorted_indexes(float * scores, int length);
         geometry_msgs::Point transform_point(const geometry_msgs::Point &in_point, const tf::Transform &in_transform);
 };

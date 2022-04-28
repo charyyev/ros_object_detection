@@ -69,29 +69,16 @@ bool ObjectDetection::point_in_range(float x, float y, float z)
 
 // box is tensor with shape{10} corresponding to class, score and 4 corners [bot left, bot right, top right, top left]
 // return tensor with shape{5} corresponding to x, y, l, w, yaw 
-torch::Tensor ObjectDetection::box_corner_to_center(torch::Tensor box, const tf::Transform &transform)
+void ObjectDetection::box_corner_to_center(float corners[8], float output[])
 {
-    torch::Tensor output = torch::zeros(5);
-    float bl_x = box[2].item().to<float>();
-    float bl_y = box[3].item().to<float>();
-    float br_x = box[4].item().to<float>();
-    float br_y = box[5].item().to<float>();
-    float tr_x = box[6].item().to<float>();
-    float tr_y = box[7].item().to<float>();
-    float tl_x = box[8].item().to<float>();
-    float tl_y = box[9].item().to<float>();
-
-    // for(int i = 2; i < 10; i+=2)
-    // {
-    //     geometry_msgs::Point point;
-    //     point.x = box[i].item().to<float>();
-    //     point.y = box[i + 1].item().to<float>();
-    //     point.z = 0;
-
-    //     geometry_msgs::Point transformed_point = transform_point(point, transform);
-    //     box[i] = point.x;
-    //     box[i + 1] = point.y;
-    // }
+    float bl_x = corners[0];
+    float bl_y = corners[1];
+    float br_x = corners[2];
+    float br_y = corners[3];
+    float tr_x = corners[4];
+    float tr_y = corners[5];
+    float tl_x = corners[6];
+    float tl_y = corners[7];
 
     float l = (sqrt(pow(bl_x - tl_x, 2) + pow(bl_y - tl_y, 2)) + sqrt(pow(br_x - tr_x, 2) + pow(br_y - tr_y, 2))) / 2;
     float w = (sqrt(pow(bl_x - br_x, 2) + pow(bl_y - br_y, 2)) + sqrt(pow(tl_x - tr_x, 2) + pow(tl_y - tr_y, 2))) / 2;
@@ -107,8 +94,6 @@ torch::Tensor ObjectDetection::box_corner_to_center(torch::Tensor box, const tf:
     output[2] = l;
     output[3] = w;
     output[4] = yaw;
-    
-    return output;
 }
 
 void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
@@ -120,16 +105,7 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
 
     tf::StampedTransform transform;
     tf::TransformListener tf_listener;
-    //std::cout<<"just before transform"<<std::endl;
-	// try{
-	// 	tf_listener.waitForTransform(lidar_frame_id, map_frame_id, stamp, ros::Duration(0.1));
-	// 	tf_listener.lookupTransform(lidar_frame_id, map_frame_id, cloud_msg->header.stamp, transform);
-	// }
-	// catch (tf::TransformException& ex) {
-	// 	ROS_INFO_STREAM(ex.what());
-	// 	return;
-	// }
-    //std::cout<<"passed transform"<<std::endl;
+
     pcl::fromROSMsg(*cloud_msg, pointcloud);
     //ros::WallTime start = ros::WallTime::now();
     torch::Tensor voxel = pcl_to_voxel();
@@ -164,8 +140,7 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         }
     }
 
-    std::vector<int> indexes = non_max_supression(pred);
-    
+    std::vector<int> indexes = non_max_supression(scores, corners, num_boxes);
     
     robot_msgs::DetectedObjectArray detected_objects;
 	detected_objects.header.stamp = stamp;
@@ -173,22 +148,24 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
 
     for(int i = 0; i < indexes.size(); i++)
     {
-        torch::Tensor box = pred[indexes[i]];
+        //torch::Tensor box = pred[indexes[i]];
+        int index = indexes[i];
         robot_msgs::DetectedObject detected_object;
 	    detected_object.header = detected_objects.header;
-        detected_object.label = object_classes[box[0].item().to<int>()];
-        detected_object.score = box[1].item().to<float>();
+        detected_object.label = object_classes[classes[index]];
+        detected_object.score = scores[index];
         detected_object.space_frame = map_frame_id;
         detected_object.pose_reliable = true;
 
+        float box[5];
+        box_corner_to_center(corners[index], box);
 
-        torch::Tensor new_box = box_corner_to_center(box, transform);
         geometry_msgs::Pose pose;
-        pose.position.x = new_box[0].item().to<float>();
-        pose.position.y = new_box[1].item().to<float>();
+        pose.position.x = box[0];
+        pose.position.y = box[1];
 
         tf2::Quaternion quat;
-        quat.setRPY(0, 0, -new_box[4].item().to<float>());
+        quat.setRPY(0, 0, -box[4]);
         quat = quat.normalize();
 
         pose.orientation.x = quat.x();
@@ -197,8 +174,8 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         pose.orientation.w = quat.w();
 
         geometry_msgs::Vector3 dim;
-        dim.x = new_box[2].item().to<float>();
-        dim.y = new_box[3].item().to<float>();
+        dim.x = box[2];
+        dim.y = box[3];
         dim.z = 2.0;
 
         detected_object.pose = pose;
@@ -225,35 +202,32 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
     // pcl_pub.publish(msg);
 }
 
-std::vector<int> ObjectDetection::non_max_supression(torch::Tensor pred)
+std::vector<int> ObjectDetection::non_max_supression(float * scores, float corners[][8], int num_boxes)
 {
     typedef boost::geometry::model::d2::point_xy<double> point_type;
     typedef boost::geometry::model::polygon<point_type> polygon_type;
 
-    polygon_type poly[pred.size(0)];
+    polygon_type poly[num_boxes];
 
     // convert bboxes to boost polygons
-    for(int i = 0; i < pred.size(0); i++)
+    for(int i = 0; i < num_boxes; i++)
     {
         for(int j = 0; j < 4; j++)
         {
-            float x = pred[i][2 * j + 2].item().to<float>();
-            float y = pred[i][2 * j + 3].item().to<float>();
+            //float x = corners[i][2 * j + 2].item().to<float>();
+            //float y = pred[i][2 * j + 3].item().to<float>();
+            float x = corners[i][2 * j];
+            float y = corners[i][2 * j + 1];
             boost::geometry::append(poly[i], boost::geometry::make<point_type>(x, y));
         }
-        float x = pred[i][2].item().to<float>();
-        float y = pred[i][3].item().to<float>();
+        float x = corners[i][0];
+        float y = corners[i][1];
         boost::geometry::append(poly[i], boost::geometry::make<point_type>(x, y));
         boost::geometry::correct(poly[i]);
     }
     
     // get sorted indices of scores
-    std::vector<float> scores;
-    for(int i = 0; i < pred.size(0); i++)
-    {
-        scores.push_back(pred[i][1].item().to<float>());
-    }
-    std::vector<int> idxs = get_sorted_indexes(scores);
+    std::vector<int> idxs = get_sorted_indexes(scores, num_boxes);
 
     std::vector<int> selected;
     while(idxs.size() > 0)
@@ -295,11 +269,11 @@ std::vector<int> ObjectDetection::non_max_supression(torch::Tensor pred)
     return selected;    
 }
 
-std::vector<int> ObjectDetection::get_sorted_indexes(std::vector<float> scores)
+std::vector<int> ObjectDetection::get_sorted_indexes(float * scores, int length)
 {
-    std::vector<int> idx(scores.size());
+    std::vector<int> idx(length);
     iota(idx.begin(), idx.end(), 0);
-    stable_sort(idx.begin(), idx.end(), [&scores](size_t i1, size_t i2) {return scores[i1] > scores[i2];});
+    stable_sort(idx.begin(), idx.end(), [scores](size_t i1, size_t i2) {return *(scores + i1) > *(scores + i2);});
 
     return idx;
 }
