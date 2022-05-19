@@ -18,10 +18,12 @@
 
 #include <numeric>    
 #include <algorithm>
+#include <cmath>
 
 class ObjectDetection
 {
     private:
+        ros::NodeHandle nh;
         ros::Subscriber pcl_sub;
         ros::Publisher objects_pub;
         ros::Publisher box_pub;
@@ -54,7 +56,7 @@ class ObjectDetection
         //tf::TransformListener tf_listener;
 
     public:
-        ObjectDetection(ros::NodeHandle *nh);
+        ObjectDetection();
         void cloud_cb(const sensor_msgs::PointCloud2ConstPtr& input);
         torch::Tensor pcl_to_voxel();
         bool point_in_range(float x, float y, float z);

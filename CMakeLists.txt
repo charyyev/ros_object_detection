@@ -5,7 +5,7 @@ project(object_detection)
 # add_compile_options(-std=c++11)
 
 #list(APPEND CMAKE_PREFIX_PATH "/tmp/libtorch/share/cmake")
-set(Torch_DIR /tmp/libtorch/share/cmake/Torch)
+set(Torch_DIR /home/stpc/installations/libtorch/share/cmake/Torch)
 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)

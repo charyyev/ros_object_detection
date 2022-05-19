@@ -5,8 +5,8 @@ int main (int argc, char** argv)
 {
     // Initialize ROS
     ros::init (argc, argv, "dl_detection");
-    ros::NodeHandle nh("~");
-    ObjectDetection detector = ObjectDetection(&nh);
+    ObjectDetection detector;
     // Spin
     ros::spin ();
+    return 0;
 }

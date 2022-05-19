@@ -1,13 +1,12 @@
 #include "ObjectDetection.h"
 
-ObjectDetection::ObjectDetection(ros::NodeHandle * nh)
+ObjectDetection::ObjectDetection()
 {
-    pcl_sub = nh->subscribe ("/velodyne_points", 1, &ObjectDetection::cloud_cb, this);
-    objects_pub = nh->advertise<robot_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
-    box_pub = nh->advertise<visualization_msgs::MarkerArray>("/bounding_boxes", 1);
-    pcl_pub = nh->advertise<sensor_msgs::PointCloud2> ("/points", 1);
-    
-    model = torch::jit::load("/home/stpc/models/pixor.pt");
+    pcl_sub = nh.subscribe ("/velodyne_points", 1, &ObjectDetection::cloud_cb, this);
+    objects_pub = nh.advertise<robot_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
+    box_pub = nh.advertise<visualization_msgs::MarkerArray>("/bounding_boxes", 1);
+    pcl_pub = nh.advertise<sensor_msgs::PointCloud2> ("/points", 1);
+    model = torch::jit::load("/home/stpc/models/mobilepixor.pt");
     if(use_gpu)
     {
         model.to(torch::kCUDA);
@@ -98,31 +97,38 @@ void ObjectDetection::box_corner_to_center(float corners[8], float output[])
 
 void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
 {
-    //cloud_msg->header.frame_id = "/map";
+    ros::WallTime start = ros::WallTime::now();
+
+    ros::WallTime begin;
+    begin = ros::WallTime::now();
     std::string lidar_frame_id = cloud_msg->header.frame_id;
-    std::string map_frame_id = "base_link";
 	ros::Time stamp = cloud_msg->header.stamp;
-
-    tf::StampedTransform transform;
-    tf::TransformListener tf_listener;
-
     pcl::fromROSMsg(*cloud_msg, pointcloud);
-    //ros::WallTime start = ros::WallTime::now();
+    std::cout<<"convert: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+
+    begin = ros::WallTime::now();
     torch::Tensor voxel = pcl_to_voxel();
-    //ros::WallTime end = ros::WallTime::now();
-    //std::cout<<"time elapsed: "<< end.toSec() - start.toSec()<<std::endl;
+    std::cout<<"voxel: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+
+    begin = ros::WallTime::now();
+    torch::cuda::synchronize();
     if(use_gpu)
     {
-        voxel = voxel.to(torch::kCUDA);
+        voxel = voxel.to(torch::kCUDA).to(torch::kHalf);
     }
+    torch::cuda::synchronize();
+    std::cout<<"bla: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     torch::NoGradGuard no_grad_;
-
+    
     std::vector<torch::jit::IValue> input = {voxel, x_min, y_min, x_res, y_res, score_threshold};
-    
-    
+
+    begin = ros::WallTime::now();
     // output of model is Nx10 tensor with N boxes and [cls, score and bot left, bot right, top right, top left corners]
     auto pred = model.forward(input).toTensor();
+    pred = pred.to(torch::kCPU);
+    std::cout<<"prediction: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+
     float * pred_data = pred.data_ptr<float>();
     int num_boxes = pred.size(0);
     int classes[num_boxes];
@@ -140,11 +146,13 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         }
     }
 
+    begin = ros::WallTime::now();
     std::vector<int> indexes = non_max_supression(scores, corners, num_boxes);
-    
+    std::cout<<"NMS: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+
     robot_msgs::DetectedObjectArray detected_objects;
 	detected_objects.header.stamp = stamp;
-	detected_objects.header.frame_id = map_frame_id;
+	detected_objects.header.frame_id = lidar_frame_id;
 
     for(int i = 0; i < indexes.size(); i++)
     {
@@ -154,7 +162,7 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
 	    detected_object.header = detected_objects.header;
         detected_object.label = object_classes[classes[index]];
         detected_object.score = scores[index];
-        detected_object.space_frame = map_frame_id;
+        detected_object.space_frame = lidar_frame_id;
         detected_object.pose_reliable = true;
 
         float box[5];
@@ -163,6 +171,9 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         geometry_msgs::Pose pose;
         pose.position.x = box[0];
         pose.position.y = box[1];
+
+        // distance
+        detected_object.distance = sqrt(box[0] * box[0] + box[1] * box[1]);
 
         tf2::Quaternion quat;
         quat.setRPY(0, 0, -box[4]);
@@ -184,22 +195,10 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         detected_objects.objects.push_back(detected_object);
     }
 
+    ros::WallTime end = ros::WallTime::now();
+    detected_objects.execution_time = end.toSec() - start.toSec();
+    std::cout<<"time elapsed: "<< end.toSec() - start.toSec()<<std::endl;
     objects_pub.publish(detected_objects);
-    // publish_markers(pred, indexes);
-
-    // sensor_msgs::PointCloud2 msg;
-    // msg.header = cloud_msg->header;
-    // msg.header.frame_id = "/map";
-    // msg.height = cloud_msg->height;
-    // msg.width = cloud_msg->width;
-    // msg.fields = cloud_msg->fields;
-    // msg.is_bigendian = cloud_msg->is_bigendian;
-    // msg.point_step = cloud_msg->point_step;
-    // msg.row_step = cloud_msg->row_step;
-    // msg.data = cloud_msg->data;
-    // msg.is_dense = cloud_msg->is_dense;
-
-    // pcl_pub.publish(msg);
 }
 
 std::vector<int> ObjectDetection::non_max_supression(float * scores, float corners[][8], int num_boxes)
@@ -214,8 +213,6 @@ std::vector<int> ObjectDetection::non_max_supression(float * scores, float corne
     {
         for(int j = 0; j < 4; j++)
         {
-            //float x = corners[i][2 * j + 2].item().to<float>();
-            //float y = pred[i][2 * j + 3].item().to<float>();
             float x = corners[i][2 * j];
             float y = corners[i][2 * j + 1];
             boost::geometry::append(poly[i], boost::geometry::make<point_type>(x, y));
