@@ -20,6 +20,11 @@
 #include <algorithm>
 #include <cmath>
 
+#include <cuda_runtime_api.h>
+#include <cuda.h>
+
+void voxel_gpu(int * indexes, float * data, int N, int x_size, int y_size, int z_size);
+
 class ObjectDetection
 {
     private:
@@ -43,6 +48,10 @@ class ObjectDetection
         const float y_res = 0.1;
         const float z_res = 0.1;
 
+        int x_size;
+        int y_size;
+        int z_size;
+
         const float score_threshold = 0.5;
         const float iou_threshold = 0.1;
         
@@ -59,6 +68,7 @@ class ObjectDetection
         ObjectDetection();
         void cloud_cb(const sensor_msgs::PointCloud2ConstPtr& input);
         torch::Tensor pcl_to_voxel();
+        void pcl_to_voxel_gpu(float * data);
         bool point_in_range(float x, float y, float z);
         void box_corner_to_center(float corners[8], float box[]);
         void publish_markers(torch::Tensor boxes, std::vector<int> indexes);

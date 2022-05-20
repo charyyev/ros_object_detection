@@ -22,6 +22,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(Boost 1.54.0 REQUIRED system)
+FIND_PACKAGE(CUDA REQUIRED)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -82,6 +83,12 @@ find_package(Boost 1.54.0 REQUIRED system)
 #   DEPENDENCIES
 #   sensor_msgs
 # )
+
+
+#SET(CUDA_NVCC_FLAGS "-arch=compute_30" CACHE STRING "nvcc flags" FORCE)
+#SET (CUDA_VERBOSE_BUILD ON CACHE BOOL "nvcc verbose" FORCE)
+#SET(LIB_TYPE STATIC) 
+CUDA_ADD_LIBRARY(voxel ${LIB_TYPE} src/voxel.cu)
 
 ################################################
 ## Declare ROS dynamic reconfigure parameters ##
@@ -147,7 +154,7 @@ add_executable(dl_detection
                 src/object_detection_node.cpp
                 src/ObjectDetection.cpp
                 )
-
+ADD_DEPENDENCIES(dl_detection voxel)
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use
@@ -162,6 +169,7 @@ add_executable(dl_detection
  target_link_libraries(dl_detection
    ${catkin_LIBRARIES}
    "${TORCH_LIBRARIES}"
+   voxel
  )
 
 

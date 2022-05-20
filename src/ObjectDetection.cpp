@@ -12,14 +12,15 @@ ObjectDetection::ObjectDetection()
         model.to(torch::kCUDA);
     }
     model.eval();
+
+    x_size = (int)((x_max - x_min) / x_res);
+    y_size = (int)((y_max - y_min) / y_res);
+    z_size = (int)((z_max - z_min) / z_res);
+
 }
 
 torch::Tensor ObjectDetection::pcl_to_voxel()
 {
-    int x_size = (int)((x_max - x_min) / x_res);
-    int y_size = (int)((y_max - y_min) / y_res);
-    int z_size = (int)((z_max - z_min) / z_res);
-
     torch::Tensor voxel = torch::zeros({1, z_size, y_size, x_size});
     float* data = voxel.data_ptr<float>();
 
@@ -40,6 +41,30 @@ torch::Tensor ObjectDetection::pcl_to_voxel()
         }
     }
     return voxel.resize_({1, z_size, y_size, x_size});
+}
+
+void ObjectDetection::pcl_to_voxel_gpu(float * data)
+{
+    std::vector<int> indexes;
+    for (pcl::PointCloud<pcl::PointXYZ>::const_iterator item = pointcloud.begin(); item != pointcloud.end(); item++)
+    {
+        float x = item->x;
+        float y = item->y;
+        float z = item->z;
+
+        if(point_in_range(x, y, z))
+        {
+            int x_idx = (int)((x - x_min) / x_res);
+            int y_idx = (int)((y - y_min) / y_res);
+            int z_idx = (int)((z - z_min) / z_res);
+
+            indexes.push_back(x_idx);
+            indexes.push_back(y_idx);
+            indexes.push_back(z_idx);
+        }
+    }
+
+    voxel_gpu(&indexes[0], data, indexes.size(), x_size, y_size, z_size);
 }
 
 
@@ -107,21 +132,24 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
     std::cout<<"convert: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     begin = ros::WallTime::now();
-    torch::Tensor voxel = pcl_to_voxel();
+    //torch::Tensor voxel = pcl_to_voxel();
+    torch::Tensor voxel = torch::zeros({1, z_size, y_size, x_size}, torch::Device(torch::kCUDA));
+    float* data = voxel.data_ptr<float>();
+    pcl_to_voxel_gpu(data);
     std::cout<<"voxel: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
-    begin = ros::WallTime::now();
-    torch::cuda::synchronize();
-    if(use_gpu)
-    {
-        voxel = voxel.to(torch::kCUDA).to(torch::kHalf);
-    }
-    torch::cuda::synchronize();
-    std::cout<<"bla: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+    // torch::cuda::synchronize();
+    // begin = ros::WallTime::now();
+    // if(use_gpu)
+    // {
+    //     voxel = voxel.to(torch::kHalf).to(torch::kCUDA);
+    // }
+    // torch::cuda::synchronize();
+    // std::cout<<"bla: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     torch::NoGradGuard no_grad_;
     
-    std::vector<torch::jit::IValue> input = {voxel, x_min, y_min, x_res, y_res, score_threshold};
+    std::vector<torch::jit::IValue> input = {voxel.resize_({1, z_size, y_size, x_size}).to(torch::kHalf), x_min, y_min, x_res, y_res, score_threshold};
 
     begin = ros::WallTime::now();
     // output of model is Nx10 tensor with N boxes and [cls, score and bot left, bot right, top right, top left corners]
@@ -369,5 +397,3 @@ void ObjectDetection::publish_markers(torch::Tensor boxes, std::vector<int> inde
     }
     box_pub.publish(object_boxes);
 }
-
-
