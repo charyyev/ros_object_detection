@@ -125,37 +125,22 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
     ros::WallTime start = ros::WallTime::now();
 
     ros::WallTime begin;
-    begin = ros::WallTime::now();
     std::string lidar_frame_id = cloud_msg->header.frame_id;
 	ros::Time stamp = cloud_msg->header.stamp;
     pcl::fromROSMsg(*cloud_msg, pointcloud);
-    std::cout<<"convert: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
-    begin = ros::WallTime::now();
-    //torch::Tensor voxel = pcl_to_voxel();
     torch::Tensor voxel = torch::zeros({1, z_size, y_size, x_size}, torch::Device(torch::kCUDA));
     float* data = voxel.data_ptr<float>();
     pcl_to_voxel_gpu(data);
-    std::cout<<"voxel: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
-
-    // torch::cuda::synchronize();
-    // begin = ros::WallTime::now();
-    // if(use_gpu)
-    // {
-    //     voxel = voxel.to(torch::kHalf).to(torch::kCUDA);
-    // }
-    // torch::cuda::synchronize();
-    // std::cout<<"bla: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     torch::NoGradGuard no_grad_;
-    
     std::vector<torch::jit::IValue> input = {voxel.resize_({1, z_size, y_size, x_size}).to(torch::kHalf), x_min, y_min, x_res, y_res, score_threshold};
 
-    begin = ros::WallTime::now();
+    //begin = ros::WallTime::now();
     // output of model is Nx10 tensor with N boxes and [cls, score and bot left, bot right, top right, top left corners]
     auto pred = model.forward(input).toTensor();
     pred = pred.to(torch::kCPU);
-    std::cout<<"prediction: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+    //std::cout<<"prediction: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     float * pred_data = pred.data_ptr<float>();
     int num_boxes = pred.size(0);
@@ -174,9 +159,9 @@ void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg
         }
     }
 
-    begin = ros::WallTime::now();
+    //begin = ros::WallTime::now();
     std::vector<int> indexes = non_max_supression(scores, corners, num_boxes);
-    std::cout<<"NMS: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+    //std::cout<<"NMS: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
 
     robot_msgs::DetectedObjectArray detected_objects;
 	detected_objects.header.stamp = stamp;
@@ -235,6 +220,7 @@ std::vector<int> ObjectDetection::non_max_supression(float * scores, float corne
     typedef boost::geometry::model::polygon<point_type> polygon_type;
 
     polygon_type poly[num_boxes];
+    float areas[num_boxes];
 
     // convert bboxes to boost polygons
     for(int i = 0; i < num_boxes; i++)
@@ -249,8 +235,10 @@ std::vector<int> ObjectDetection::non_max_supression(float * scores, float corne
         float y = corners[i][1];
         boost::geometry::append(poly[i], boost::geometry::make<point_type>(x, y));
         boost::geometry::correct(poly[i]);
+
+        areas[i] = boost::geometry::area(poly[i]);
     }
-    
+
     // get sorted indices of scores
     std::vector<int> idxs = get_sorted_indexes(scores, num_boxes);
 
@@ -268,7 +256,6 @@ std::vector<int> ObjectDetection::non_max_supression(float * scores, float corne
             std::vector<polygon_type> intersection;
             std::vector<polygon_type> uni;
             boost::geometry::intersection(poly[index], poly[idxs[i]], intersection);
-            boost::geometry::union_(poly[index], poly[idxs[i]], uni);
             float iou;
 
             if(intersection.size() > 1)
@@ -282,7 +269,8 @@ std::vector<int> ObjectDetection::non_max_supression(float * scores, float corne
             }
             else
             {
-                iou = boost::geometry::area(intersection[0]) / boost::geometry::area(uni[0]);
+                float intersection_area = boost::geometry::area(intersection[0]);
+                iou = intersection_area / (areas[index] + areas[idxs[i]] - intersection_area);
             }
             if(iou > iou_threshold)
             {
