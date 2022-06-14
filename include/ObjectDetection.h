@@ -57,7 +57,7 @@ class ObjectDetection
         
         bool use_gpu = true;
 
-        std::string object_classes[4] = {"background", "car", "pedestrian", "cyclist"};
+        std::string object_classes[5] = {"background", "car", "pedestrian", "cyclist", "bus"};
 
         float box_z_bot = -2.0;
         float box_z_top = 0.0;

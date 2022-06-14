@@ -154,13 +154,13 @@ void ObjectDetection::cloud_cb_nms_free(const sensor_msgs::PointCloud2ConstPtr& 
 
     for(int i = 0; i < num_boxes; i++)
     {
-        classes[i] = (int)(*(pred_data + i * 10 + 0));
-        scores[i] = *(pred_data + i * 10 + 1);
-        x[i] = *(pred_data + i * 10 + 2);
-        y[i] = *(pred_data + i * 10 + 3);
-        l[i] = *(pred_data + i * 10 + 4);
-        w[i] = *(pred_data + i * 10 + 5);
-        yaw[i] = *(pred_data + i * 10 + 6);
+        classes[i] = (int)(*(pred_data + i * 7 + 0));
+        scores[i] = *(pred_data + i * 7 + 1);
+        x[i] = *(pred_data + i * 7 + 2);
+        y[i] = *(pred_data + i * 7 + 3);
+        l[i] = *(pred_data + i * 7 + 4);
+        w[i] = *(pred_data + i * 7 + 5);
+        yaw[i] = *(pred_data + i * 7 + 6);
     }
 
 
