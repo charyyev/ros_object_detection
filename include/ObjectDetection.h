@@ -67,6 +67,7 @@ class ObjectDetection
     public:
         ObjectDetection();
         void cloud_cb(const sensor_msgs::PointCloud2ConstPtr& input);
+        void cloud_cb_nms_free(const sensor_msgs::PointCloud2ConstPtr& input);
         torch::Tensor pcl_to_voxel();
         void pcl_to_voxel_gpu(float * data);
         bool point_in_range(float x, float y, float z);

@@ -2,11 +2,11 @@
 
 ObjectDetection::ObjectDetection()
 {
-    pcl_sub = nh.subscribe ("/velodyne_points", 1, &ObjectDetection::cloud_cb, this);
+    pcl_sub = nh.subscribe ("/velodyne_points", 1, &ObjectDetection::cloud_cb_nms_free, this);
     objects_pub = nh.advertise<robot_msgs::DetectedObjectArray>("/detection/lidar_detector/objects", 1);
     box_pub = nh.advertise<visualization_msgs::MarkerArray>("/bounding_boxes", 1);
     pcl_pub = nh.advertise<sensor_msgs::PointCloud2> ("/points", 1);
-    model = torch::jit::load("/home/stpc/models/mobilepixor.pt");
+    model = torch::jit::load("/home/stpc/models/mobilepixor_nms_free.pt");
     if(use_gpu)
     {
         model.to(torch::kCUDA);
@@ -118,6 +118,99 @@ void ObjectDetection::box_corner_to_center(float corners[8], float output[])
     output[2] = l;
     output[3] = w;
     output[4] = yaw;
+}
+
+void ObjectDetection::cloud_cb_nms_free(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
+{
+    ros::WallTime start = ros::WallTime::now();
+
+    ros::WallTime begin;
+    std::string lidar_frame_id = cloud_msg->header.frame_id;
+	ros::Time stamp = cloud_msg->header.stamp;
+    pcl::fromROSMsg(*cloud_msg, pointcloud);
+
+    torch::Tensor voxel = torch::zeros({1, z_size, y_size, x_size}, torch::Device(torch::kCUDA));
+    float* data = voxel.data_ptr<float>();
+    pcl_to_voxel_gpu(data);
+
+    torch::NoGradGuard no_grad_;
+    std::vector<torch::jit::IValue> input = {voxel.resize_({1, z_size, y_size, x_size}).to(torch::kHalf), x_min, y_min, x_res, y_res, score_threshold};
+
+    //begin = ros::WallTime::now();
+    // output of model is Nx10 tensor with N boxes and [cls, score and bot left, bot right, top right, top left corners]
+    auto pred = model.forward(input).toTensor();
+    pred = pred.to(torch::kCPU);
+    //std::cout<<"prediction: "<<ros::WallTime::now().toSec() - begin.toSec()<<std::endl;
+
+    float * pred_data = pred.data_ptr<float>();
+    int num_boxes = pred.size(0);
+    int classes[num_boxes];
+    float scores[num_boxes];
+    float x[num_boxes];
+    float y[num_boxes];
+    float l[num_boxes];
+    float w[num_boxes];
+    float yaw[num_boxes];
+
+    for(int i = 0; i < num_boxes; i++)
+    {
+        classes[i] = (int)(*(pred_data + i * 10 + 0));
+        scores[i] = *(pred_data + i * 10 + 1);
+        x[i] = *(pred_data + i * 10 + 2);
+        y[i] = *(pred_data + i * 10 + 3);
+        l[i] = *(pred_data + i * 10 + 4);
+        w[i] = *(pred_data + i * 10 + 5);
+        yaw[i] = *(pred_data + i * 10 + 6);
+    }
+
+
+    robot_msgs::DetectedObjectArray detected_objects;
+	detected_objects.header.stamp = stamp;
+	detected_objects.header.frame_id = lidar_frame_id;
+
+    for(int index = 0; index < num_boxes; index++)
+    {
+        robot_msgs::DetectedObject detected_object;
+	    detected_object.header = detected_objects.header;
+        detected_object.label = object_classes[classes[index]];
+        detected_object.score = scores[index];
+        detected_object.space_frame = lidar_frame_id;
+        detected_object.pose_reliable = true;
+
+        //float box[5];
+        //box_corner_to_center(corners[index], box);
+
+        geometry_msgs::Pose pose;
+        pose.position.x = x[index];
+        pose.position.y = y[index];
+
+        // distance
+        detected_object.distance = sqrt(x[index] * x[index] + y[index] * y[index]);
+
+        tf2::Quaternion quat;
+        quat.setRPY(0, 0, -yaw[index]);
+        quat = quat.normalize();
+
+        pose.orientation.x = quat.x();
+        pose.orientation.y = quat.y();
+        pose.orientation.z = quat.z();
+        pose.orientation.w = quat.w();
+
+        geometry_msgs::Vector3 dim;
+        dim.x = l[index];
+        dim.y = w[index];
+        dim.z = 2.0;
+
+        detected_object.pose = pose;
+        detected_object.dimensions = dim;
+
+        detected_objects.objects.push_back(detected_object);
+    }
+
+    ros::WallTime end = ros::WallTime::now();
+    detected_objects.execution_time = end.toSec() - start.toSec();
+    std::cout<<"time elapsed: "<< end.toSec() - start.toSec()<<std::endl;
+    objects_pub.publish(detected_objects);
 }
 
 void ObjectDetection::cloud_cb(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
